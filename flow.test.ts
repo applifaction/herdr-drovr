@@ -200,6 +200,22 @@ test("workspace name uses a compact input-only modal matching Herdr's native geo
   assert.match(manifest, /id = "workspace-name"[\s\S]*?placement = "popup"\nwidth = 56\nheight = 7/);
 });
 
+for (const mode of ["tab", "pane"] as const) {
+  test(`${mode}: destination picker uses readable text and uncolored creation rows`, () => {
+    const result = runFlow(mode, [{ stdout: "", status: 130 }]);
+    assert.equal(result.status, 0, result.stderr);
+    const picker = result.pickers[0]!;
+    const colors = valueOf(picker, "--color")!.split(",");
+    for (const role of ["fg", "bg", "input-fg", "input-bg", "info", "prompt", "preview-fg", "preview-bg"]) {
+      assert.ok(colors.includes(`${role}:-1`), `${role} must inherit terminal defaults`);
+    }
+    assert.ok(colors.some(c => /^fg\+:#[0-9a-f]{6}/.test(c)));
+    assert.ok(colors.some(c => /^bg\+:#[0-9a-f]{6}/.test(c)), "selection must have an explicit, paired background");
+    assert.ok(!result.calls.find(c => c.tool === "fzf")!.input!.includes("\x1b"),
+      "creation-row ANSI colors would override the readable selection style");
+  });
+}
+
 test("name form inherits a matched foreground/background pair in light and dark terminals", () => {
   const result = runFlow("tab", [tabNew(), name("Project")]);
   assert.equal(result.status, 0, result.stderr);

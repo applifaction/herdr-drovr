@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import pty
+import re
 import select
 import shutil
 import socket
@@ -129,9 +130,10 @@ command = "drovr.move-pane"
         bottom = next(i for i in range(top+1, len(lines)) if lines[i][left] == '└' and lines[i][right] == '┘')
         return {'width': right-left+1, 'height': bottom-top+1}
 
-    def text_colors(text):
-        row = next(i for i, line in enumerate(screen.display) if text in line)
-        col = screen.display[row].index(text)
+    def text_colors(text, bounds=None):
+        left, top, right, bottom = bounds or (0, 0, screen.columns, screen.lines)
+        row = next(i for i in range(top, bottom) if text in screen.display[i][left:right])
+        col = left + screen.display[row][left:right].index(text)
         cell = screen.buffer[row][col]
         return {'fg': cell.fg, 'bg': cell.bg, 'reverse': cell.reverse, 'bold': cell.bold}
 
@@ -148,6 +150,37 @@ command = "drovr.move-pane"
         bg = args.host_background if colors['bg'] == 'default' else colors['bg']
         low, high = sorted([luminance(fg), luminance(bg)])
         return (high+.05)/(low+.05)
+
+    def check_picker_contrast(query):
+        top = next(i for i, line in enumerate(screen.display) if '┌drovr' in line)
+        left = screen.display[top].index('┌drovr')
+        right = screen.display[top].index('┐', left)
+        bottom = next(i for i in range(top+1, screen.lines) if screen.display[i][left] == '└')
+        bounds = (left+1, top+1, right, bottom)
+        # Keep a cell-accurate image source as well as the numerical checks.
+        results['picker_cells'] = [[screen.buffer[y][x]._asdict() for x in range(left, right+1)]
+                                   for y in range(top, bottom+1)]
+        labels = [query, 'new workspace', 'enter', 'cancel'] if args.destination == 'new' else [query, 'enter', 'cancel']
+        if args.mode == 'pane' and args.destination == 'new':
+            labels.append('new tab')  # Also check an unselected creation row.
+        results['picker_colors'] = {text: text_colors(text, bounds) for text in labels}
+        count = next(match.group() for y in range(top+1, bottom)
+                     if (match := re.search(r'\b\d+/\d+\b', screen.display[y][left+1:right])))
+        results['picker_colors']['result count'] = text_colors(count, bounds)
+        results['picker_colors']['selection pointer'] = text_colors('▌', bounds)
+        # The query occurs both in the input and in matching rows; inspect all
+        # instances so the selected row cannot hide behind a passing input.
+        for y in range(top+1, bottom):
+            line = screen.display[y][left+1:right]
+            for match in re.finditer(re.escape(query), line):
+                cell = screen.buffer[y][left+1+match.start()]
+                results['picker_colors'][f'query at row {y}'] = {
+                    'fg': cell.fg, 'bg': cell.bg, 'reverse': cell.reverse, 'bold': cell.bold}
+        for text, colors in results['picker_colors'].items():
+            assert contrast(colors) >= 4.5, f'Unreadable destination picker text {text!r}: {colors} ({contrast(colors):.2f}:1)'
+        if args.destination == 'new':
+            assert results['picker_colors']['new workspace']['bg'] not in ('default', args.host_background), \
+                'Selection must remain visibly highlighted, not just readable'
 
     def stop_owned(process):
         if process is None:
@@ -213,6 +246,7 @@ command = "drovr.move-pane"
                     keys(b'\x0e')  # ctrl-n: skip new-tab row
             else:
                 keys(b'TARGET')
+            check_picker_contrast('Unmatched query' if args.destination == 'new' else 'TARGET')
             keys(b'\r')
             if args.destination == 'new':
                 wait_for(lambda: 'new workspace' in '\n'.join(screen.display) and '^c clear' in '\n'.join(screen.display),

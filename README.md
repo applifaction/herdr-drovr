@@ -86,6 +86,8 @@ Three scripts, no npm runtime dependencies:
 
 The name modal is plugin-rendered, not Herdr's internal dialog API. It matches the native dialog's dimensions and main controls. Text and background inherit the terminal's default color pair; buttons use inverse video. This keeps input, labels and validation messages readable in both light and dark terminals instead of assuming ANSI bright white is a theme text color.
 
+The destination pickers also inherit the terminal's default text/background pair, including search input, counters and keyboard hints. The highlighted destination has an explicit light-text/dark-background pair. Creation rows carry no embedded ANSI gray, so they cannot override the selection contrast.
+
 A tab move reconstructs the layout tree from the rects Herdr actually reported (no ratio arithmetic), re-validates the source after the picker and any name prompt, then replays the tree in the destination: one `pane move --new-tab`/`--new-workspace` for the anchor, then one `pane move --split` per split node with the exact direction and ratio. Earlier moves use `--no-focus`; the final move uses `--focus`. A pane move uses `--focus` in its single move request as well.
 
 Focus must be part of the move itself: on Herdr 0.9.1, removing the last source pane also closes its tab and popup, terminating the picker before any subsequent focus command could run.
@@ -120,7 +122,7 @@ python3 -m venv .local-validation/venv
 .local-validation/venv/bin/python tests/tui_smoke.py --destination new --mouse-name --cancel-name --output .local-validation/tui-mouse-cancel.json
 ```
 
-Name-modal tests compare the popup dimensions to Herdr's actual tab-name dialog and exercise keyboard/mouse controls, cancellation, validation and destination focus. They also measure rendered text contrast for the suggestion, newly typed name, title, controls and validation message (minimum 4.5:1). Default terminal colors are resolved against explicit outer-terminal fixtures, independently of Herdr's chrome theme:
+Name-modal tests compare the popup dimensions to Herdr's actual tab-name dialog and exercise keyboard/mouse controls, cancellation, validation and destination focus. They also measure rendered text contrast in **both** workflow steps: destination search input, selected/unselected creation rows, pointer, result counter, keyboard hints, then the name suggestion, newly typed name, title, controls and validation message (minimum 4.5:1). Default terminal colors are resolved against explicit outer-terminal fixtures, independently of Herdr's chrome theme:
 
 ```bash
 .local-validation/venv/bin/python tests/tui_smoke.py --destination new --blank-name --theme solarized-light --host-foreground 171421 --host-background ffffff --output .local-validation/tui-light.json

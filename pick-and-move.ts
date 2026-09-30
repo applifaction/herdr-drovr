@@ -254,9 +254,10 @@ function livePaneTabs(): Map<string, string> {
 const FZF_NO_MATCH = 1;
 const FZF_CANCELLED = 130;
 
-// Herdr themes the popup's ANSI palette, so styling with palette names (never
-// hex) makes the picker inherit whatever theme is active. Blue is herdr's
-// accent; 8 is the muted "comment" tone its chrome uses for secondary text.
+// ANSI palette slots are terminal colors, not Herdr UI theme roles. Inherit
+// normal foreground/background together. Give the current row an explicit
+// high-contrast pair: inverse defaults can resolve as black-on-white inside
+// Herdr even on a light host, making the selection disappear into the list.
 //
 // Geometry (measured in a pty; every element must share one right boundary):
 // fzf reserves the last content column on the input/info row, so the rule and
@@ -268,8 +269,7 @@ const FZF_CANCELLED = 130;
 // whole rows: 1 row of padding plus half the border row is ~1.5 cell heights,
 // which is ~3.5 cell widths at typical font aspect. So each side carries 3
 // blank columns to meet it: 3 of left padding; 1 of right padding plus the
-// scrollbar slot plus the column herdr's popup insets on the right. gutter:8
-// mutes the per-line ▌ bar; the pointer stays accent blue.
+// scrollbar slot plus the column herdr's popup insets on the right.
 const FZF_STYLE = [
   "--layout", "reverse",
   "--info", "inline-right",
@@ -278,13 +278,14 @@ const FZF_STYLE = [
   "--highlight-line",
   "--ansi",
   "--padding", "1,1,1,3",
-  "--color", "16,bg:-1,gutter:8,bg+:0,fg:7,fg+:15,hl:4,hl+:12,prompt:4,pointer:4,input-fg:15,info:8,separator:8,spinner:8,scrollbar:8",
+  "--color", "16,bg:-1,fg:-1,gutter:-1,bg+:#263244,fg+:#f8fafc:bold,hl:-1:bold:underline,hl+:#f8fafc:bold:underline,prompt:-1,pointer:#f8fafc,input-bg:-1,input-fg:-1,info:-1,separator:-1,spinner:-1,scrollbar:-1,preview-fg:-1,preview-bg:-1",
 ];
 
 // Preview avoids fzf's built-in 2-column footer/header indent.
 // Usable width: TTY columns - 4 padding columns - 1 reserved right column.
 type Hint = [key: string, action: string];
-const KEY_TONE = "\x1b[38;5;7m";
+const KEY_STYLE = "\x1b[1m";
+const RESET_STYLE = "\x1b[0m";
 function hintArgs(dir: string, left: Hint[], right: Hint[]): string[] {
   const w = (process.stdout.columns ?? 62) - 5;
   const lKeyW = Math.max(...left.map(([k]) => k.length));
@@ -295,8 +296,8 @@ function hintArgs(dir: string, left: Hint[], right: Hint[]): string[] {
   for (let i = 0; i < rows; i++) {
     const [lk, la] = left[i] ?? ["", ""];
     const [rk, ra] = right[i] ?? ["", ""];
-    const lText = lk ? `${KEY_TONE}${lk.padEnd(lKeyW)}${UNMUTE}  ${MUTE}${la}${UNMUTE}` : "";
-    const rText = rk ? `${KEY_TONE}${rk.padStart(rKeyW)}${UNMUTE}  ${MUTE}${ra.padStart(rActW)}${UNMUTE}` : "";
+    const lText = lk ? `${KEY_STYLE}${lk.padEnd(lKeyW)}${RESET_STYLE}  ${la}` : "";
+    const rText = rk ? `${KEY_STYLE}${rk.padStart(rKeyW)}${RESET_STYLE}  ${ra.padStart(rActW)}` : "";
     const lLen = lk ? lKeyW + 2 + la.length : 0;
     const rLen = rk ? rKeyW + 2 + rActW : 0;
     lines.push(`${lText}${" ".repeat(Math.max(1, w - lLen - rLen))}${rText}`);
@@ -306,11 +307,10 @@ function hintArgs(dir: string, left: Hint[], right: Hint[]): string[] {
   return ["--preview", `cat '${file}'`, "--preview-window", `down,${rows + 1},noborder,nowrap,noinfo`];
 }
 
-// The ＋ sentinel rows render in the muted tone (fzf runs with --ansi).
-const MUTE = "\x1b[38;5;8m";
-const UNMUTE = "\x1b[0m";
-function mutedRow(label: string, token: string): string {
-  return `${MUTE}${label}${UNMUTE}\t${token}`;
+// Keep sentinel text uncolored so it inherits both normal and selected-row
+// styles. Embedded gray ANSI escapes would override fzf's readable selection.
+function sentinelRow(label: string, token: string): string {
+  return `${label}\t${token}`;
 }
 
 // fzf runs with --disabled and this script does the filtering (via fzf
@@ -319,10 +319,10 @@ function mutedRow(label: string, token: string): string {
 // and enter always lands on the best real match.
 function searchScript(candidatesExpr: string, sentinels: [string, string][]): string {
   const named = sentinels
-    .map(([label, token]) => `printf '\\033[38;5;8m${label} “%s”\\033[0m\\t${token}\\n' "$q"`)
+    .map(([label, token]) => `printf '${label} “%s”\\t${token}\\n' "$q"`)
     .join("\n  ");
   const plain = sentinels
-    .map(([label, token]) => `printf '\\033[38;5;8m${label}\\033[0m\\t${token}\\n'`)
+    .map(([label, token]) => `printf '${label}\\t${token}\\n'`)
     .join("\n  ");
   return `q=$1
 f=${candidatesExpr}
@@ -450,7 +450,7 @@ function moveTabFlow(srcPane: string): number {
         "--disabled",
         ...reloadOnChange(searchSh),
       ],
-      [...wsRows, mutedRow("＋ new workspace", NEW_WS_TOKEN)].join("\n")
+      [...wsRows, sentinelRow("＋ new workspace", NEW_WS_TOKEN)].join("\n")
     );
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -574,7 +574,7 @@ function movePaneFlow(srcPane: string): number {
         ...reloadOnChange(searchSh),
         "--bind", `ctrl-t:transform[${toggle}]+reload(sh '${searchSh}' {q})`,
       ],
-      [...currentLines, mutedRow("＋ new tab", NEW_TAB_TOKEN), mutedRow("＋ new workspace", NEW_WS_TOKEN)].join("\n")
+      [...currentLines, sentinelRow("＋ new tab", NEW_TAB_TOKEN), sentinelRow("＋ new workspace", NEW_WS_TOKEN)].join("\n")
     );
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
