@@ -24,6 +24,7 @@ parser.add_argument('--destination', choices=['existing', 'new'], default='exist
 parser.add_argument('--split', action='store_true')
 parser.add_argument('--cancel-name', action='store_true')
 parser.add_argument('--blank-name', action='store_true')
+parser.add_argument('--mouse-name', action='store_true')
 parser.add_argument('--close-workspace', action='store_true')
 args = parser.parse_args()
 assert not (args.cancel_name or args.blank_name) or args.destination == 'new'
@@ -108,6 +109,20 @@ command = "drovr.move-pane"
                 return value
         raise AssertionError(description+'\n'+'\n'.join(screen.display))
 
+    def click_name_action(word):
+        row = next(i for i, line in enumerate(screen.display) if '^c clear' in line and 'esc cancel' in line)
+        col = screen.display[row].index(word) + 2
+        keys(f'\x1b[<0;{col};{row+1}M\x1b[<0;{col};{row+1}m'.encode())
+
+    def modal_geometry(lines):
+        title_row = next(i for i, line in enumerate(lines) if 'rename tab' in line or 'new workspace' in line)
+        # Split-pane frames also have corners: use the frame nearest the title.
+        top = next(i for i in range(title_row-1, -1, -1) if '┌' in lines[i] and '┐' in lines[i])
+        left = lines[top].index('┌')
+        right = lines[top].index('┐', left)
+        bottom = next(i for i in range(top+1, len(lines)) if lines[i][left] == '└' and lines[i][right] == '┘')
+        return {'width': right-left+1, 'height': bottom-top+1}
+
     def stop_owned(process):
         if process is None:
             return
@@ -151,6 +166,11 @@ command = "drovr.move-pane"
             client = subprocess.Popen([herdr], env=env, stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
             pump(1)
             keys(b'\x1b[I')
+            if args.destination == 'new':
+                keys(b'\x02T')  # native tab-name modal, for visual comparison
+                wait_for(lambda: 'rename tab' in '\n'.join(screen.display), 'native name modal did not open')
+                results['native_name_prompt'] = screen.display
+                keys(b'\x1b')
             keys(b'\x02M' if args.mode == 'tab' else b'\x02m')
             wait_for(lambda: f'move {args.mode} to' in '\n'.join(screen.display), 'picker did not open')
             if args.mode == 'pane' and args.destination == 'existing':
@@ -163,21 +183,37 @@ command = "drovr.move-pane"
                 keys(b'TARGET')
             keys(b'\r')
             if args.destination == 'new':
-                wait_for(lambda: 'workspace name' in '\n'.join(screen.display), 'name prompt did not open')
+                wait_for(lambda: 'new workspace' in '\n'.join(screen.display) and '^c clear' in '\n'.join(screen.display),
+                         'compact name modal did not open')
                 results['name_prompt'] = screen.display
+                results['modal_geometry'] = modal_geometry(screen.display)
+                assert results['modal_geometry'] == modal_geometry(results['native_name_prompt']) == {'width': 56, 'height': 7}
+                assert 'Create workspace' not in '\n'.join(screen.display)
+                assert 'move tab to' not in '\n'.join(screen.display)
                 if args.blank_name:
-                    keys(b'\x15\r')
+                    if args.mouse_name:
+                        click_name_action('clear')
+                    else:
+                        keys(b'\x03')  # ctrl-c clears, it must not cancel the modal
+                    keys(b'\r')
                     wait_for(lambda: 'cannot be empty' in '\n'.join(screen.display), 'empty name was not rejected')
                     assert len(rpc('workspace.list')['workspaces']) == 2
                 if args.cancel_name:
-                    keys(b'\x1b')
+                    if args.mouse_name:
+                        click_name_action('cancel')
+                    else:
+                        keys(b'\x1b')
                     pump(.5)
                     assert len(rpc('workspace.list')['workspaces']) == 2
                     assert any(t['tab_id'] == src_tab for t in rpc('tab.list')['tabs'])
                     assert rpc('pane.get', {'pane_id': src_pane})['pane']['tab_id'] == src_tab
                     results['cancelled_without_changes'] = True
                 else:
-                    keys('\x15My new workspace ä\r'.encode())
+                    keys('\x15My new workspace ä'.encode())
+                    if args.mouse_name:
+                        click_name_action('save')
+                    else:
+                        keys(b'\r')
             if not args.cancel_name:
                 def destination_workspace():
                     label = 'My new workspace ä' if args.destination == 'new' else 'TARGET'

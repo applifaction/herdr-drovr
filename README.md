@@ -16,14 +16,14 @@ Herdr has no built-in "move tab to workspace", and recreating a tab by replaying
 - 🎈 **Floating picker** -- theme-matched fzf popup; the tiled layout never shifts
 - 🌐 **Cross-workspace** -- `ctrl-t` in the pane picker opens every workspace's tabs as destinations
 - 🎯 **Focus follows** -- the final move focuses the destination, even when Herdr closes the source tab and picker
-- ✏️ **Name new workspaces** -- confirm an editable name in a separate prompt; the moved tab keeps its label
+- ✏️ **Name new workspaces** -- a compact input modal styled like Herdr's tab-name dialog; the moved tab keeps its label
 - ✅ **Verified moves** -- every move is checked against the server; failures surface right in the picker
 
 ## Requirements
 
 - **herdr** `>= 0.7.4` -- the picker uses floating popup panels
 - **node** `>= 23` -- runs the TypeScript sources directly via native type stripping; no build step
-- **fzf** on `PATH` -- `brew install fzf` on macOS
+- **fzf** `>= 0.65.0` on `PATH` (the name modal uses clickable footer actions); `brew install fzf` on macOS
 
 ## Install
 
@@ -71,17 +71,20 @@ herdr server reload-config
 
 The tab picker offers `＋ new workspace`; the pane picker also offers `＋ new tab`. These rows stay below the real matches, so `enter` still lands on the best real match.
 
-- **New workspace:** selecting `＋ new workspace` opens a separate name prompt. The search query is an editable suggestion, not an automatic name. Enter a non-empty name and press `enter`; `esc` cancels without moving anything. Empty or whitespace-only names are rejected. The tab being moved keeps its original label.
+- **New workspace:** selecting `＋ new workspace` opens a compact 56×7-cell modal matching Herdr's tab-name dialog, with one text field and no results list or counter. The search query is an editable suggestion, not an automatic name. `enter` saves, `ctrl-c` clears the field, and `esc` cancels without moving anything. You can also click **save**, **clear**, or **cancel**. Empty or whitespace-only names are rejected. The tab being moved keeps its original label.
 - **New tab:** the typed search query still supplies its name, previewed live (`＋ new tab "api"`).
 
 If a move leaves the source tab or workspace empty, Herdr closes it. Keyboard focus follows the moved tab or pane to the destination. For a multi-pane tab, focus lands on the last pane placed while reconstructing the layout.
 
 ## How it works
 
-Two scripts, zero runtime dependencies:
+Three scripts, no npm runtime dependencies:
 
 - **`open-picker.ts`** runs headless behind the keybinding: it resolves the focused pane and opens the picker popup with the move context in its environment.
-- **`pick-and-move.ts`** runs inside the popup, where fzf has a real TTY. A popup is a session resource, not a pane in the source tab, so nothing pins the source layout and the moves run inline right after the pick.
+- **`pick-and-move.ts`** runs inside the popup, where fzf has a real TTY. It handles destination selection, the input-only name form, source revalidation and the moves.
+- **`open-workspace-name.ts`** is a short-lived detached opener. Herdr cannot resize an existing popup and allows only one at a time, so the destination picker exits and the opener launches the smaller name modal. It carries the original source snapshot forward, retries only while the old popup is still open (at most five seconds), and reports other launch errors as notifications. It never closes another popup or retries a move.
+
+The name modal is plugin-rendered, not Herdr's internal dialog API. It inherits the terminal palette and matches the native dialog's dimensions and main controls.
 
 A tab move reconstructs the layout tree from the rects Herdr actually reported (no ratio arithmetic), re-validates the source after the picker and any name prompt, then replays the tree in the destination: one `pane move --new-tab`/`--new-workspace` for the anchor, then one `pane move --split` per split node with the exact direction and ratio. Earlier moves use `--no-focus`; the final move uses `--focus`. A pane move uses `--focus` in its single move request as well.
 
@@ -113,7 +116,11 @@ python3 -m venv .local-validation/venv
 .local-validation/venv/bin/python tests/tui_smoke.py --destination new --close-workspace --output .local-validation/tui-close.json
 .local-validation/venv/bin/python tests/tui_smoke.py --mode pane --output .local-validation/tui-pane.json
 .local-validation/venv/bin/python tests/tui_smoke.py --mode pane --destination new --output .local-validation/tui-pane-new.json
+.local-validation/venv/bin/python tests/tui_smoke.py --destination new --mouse-name --blank-name --output .local-validation/tui-mouse.json
+.local-validation/venv/bin/python tests/tui_smoke.py --destination new --mouse-name --cancel-name --output .local-validation/tui-mouse-cancel.json
 ```
+
+Name-modal tests compare the popup dimensions to Herdr's actual tab-name dialog and exercise keyboard/mouse controls, cancellation, validation and destination focus.
 
 ## License
 

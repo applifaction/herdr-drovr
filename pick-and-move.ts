@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { openWorkspaceNameDialog } from "./open-workspace-name.ts";
 
 const HB = process.env.HERDR_BIN_PATH || "herdr";
 
@@ -367,28 +368,53 @@ type WorkspaceNamePick =
   | { outcome: "picked"; name: string }
   | { outcome: "cancelled" | "failed" };
 
-// Naming is a separate, cancellable step. The destination search is only an
-// editable suggestion, never permission to reuse the source tab's label.
+// Match Herdr's native 56×7 name modal: title, one input, action hints.
+// fzf supplies terminal editing and paste handling, but no filter list or
+// result counter. print-query accepts input even without a selected row.
 function promptWorkspaceName(initialQuery: string): WorkspaceNamePick {
   let query = initialQuery.trim();
-  let header = "Choose a workspace name. Enter to create · esc to cancel";
+  let error = "";
   while (true) {
     const pick = runFzf(
       [
-        ...FZF_STYLE,
-        "--prompt", "workspace name › ",
-        "--header", header,
+        "--layout", "reverse",
+        "--padding", "0,0,1,0",
+        "--no-info", "--no-separator", "--no-scrollbar",
+        "--ansi", "--disabled",
+        "--header-first",
+        "--header", `\x1b[1mnew workspace\x1b[0m\n${error || " "}`,
+        "--prompt", " ",
         "--query", query,
-        "--print-query",
-        "--disabled",
+        "--bind", "enter:print-query,ctrl-c:clear-query,esc:abort",
+        "--bind", 'click-footer:transform[case "$FZF_CLICK_FOOTER_WORD" in save|↵) echo print-query;; clear|^c) echo clear-query;; cancel|esc) echo abort;; esac]',
+        "--footer-border", "none",
+        "--footer", "        \x1b[1;30;44m ↵ save \x1b[0m  \x1b[1;37;40m ^c clear \x1b[0m  \x1b[1;37;40m esc cancel \x1b[0m",
+        "--color", "16,bg:-1,fg:7,input-bg:0,input-fg:15,prompt:15,header:15,footer:7",
       ],
-      "Create workspace\n"
+      ""
     );
     if (pick.outcome !== "picked") return { outcome: pick.outcome };
     query = (pick.stdout.split("\n")[0] ?? "").trim();
     if (query) return { outcome: "picked", name: query };
-    header = "Workspace name cannot be empty. Enter a name · esc to cancel";
+    error = "\x1b[31mWorkspace name cannot be empty\x1b[0m";
   }
+}
+
+type WorkspaceMoveRequest = { query: string } & (
+  | { mode: "tab"; root: LayoutNode; srcTab: string; tabLabel: string }
+  | { mode: "pane"; src: PaneGetResult["pane"] }
+);
+
+function workspaceNameFlow(): number {
+  const request = JSON.parse(process.env.DROVR_WORKSPACE_MOVE || "null") as WorkspaceMoveRequest | null;
+  if (!request || (request.mode !== "tab" && request.mode !== "pane") || typeof request.query !== "string") {
+    throw new Error("no pending workspace move (open the dialog through the destination picker)");
+  }
+  const name = promptWorkspaceName(request.query);
+  if (name.outcome !== "picked") return name.outcome === "failed" ? 1 : 0;
+  return request.mode === "tab"
+    ? moveTab(request.root, request.srcTab, request.tabLabel, NEW_WS_TOKEN, name.name)
+    : movePane(request.src, { dest: { kind: "new-workspace" }, direction: "right" }, name.name);
 }
 
 function moveTabFlow(srcPane: string): number {
@@ -439,13 +465,14 @@ function moveTabFlow(srcPane: string): number {
     return 1;
   }
 
-  let workspaceName = "";
   if (token === NEW_WS_TOKEN) {
-    const name = promptWorkspaceName(queryRaw);
-    if (name.outcome !== "picked") return name.outcome === "failed" ? 1 : 0;
-    workspaceName = name.name;
+    const request: WorkspaceMoveRequest = { mode: "tab", root, srcTab, tabLabel, query: queryRaw };
+    return openWorkspaceNameDialog(JSON.stringify(request));
   }
+  return moveTab(root, srcTab, tabLabel, token);
+}
 
+function moveTab(root: LayoutNode, srcTab: string, tabLabel: string, token: string, workspaceName = ""): number {
   // The popup is session-modal, so the user can't touch the layout while it
   // is open, but sibling agents driving the CLI still can; re-validate.
   const live = livePaneTabs();
@@ -563,13 +590,14 @@ function movePaneFlow(srcPane: string): number {
     return 1;
   }
 
-  let name = queryRaw.trim();
   if (choice.dest.kind === "new-workspace") {
-    const pickedName = promptWorkspaceName(queryRaw);
-    if (pickedName.outcome !== "picked") return pickedName.outcome === "failed" ? 1 : 0;
-    name = pickedName.name;
+    const request: WorkspaceMoveRequest = { mode: "pane", src, query: queryRaw };
+    return openWorkspaceNameDialog(JSON.stringify(request));
   }
+  return movePane(src, choice, queryRaw.trim());
+}
 
+function movePane(src: PaneGetResult["pane"], choice: { dest: PaneDest; direction: SplitDirection }, name: string): number {
   if (livePaneTabs().get(src.pane_id) !== src.tab_id) {
     keepPickerOpenUntilEnter("drovr: the source pane changed while the picker was open; nothing was moved.");
     return 1;
@@ -589,6 +617,7 @@ function movePaneFlow(srcPane: string): number {
 }
 
 function main(): number {
+  if (process.argv[2] === "workspace-name") return workspaceNameFlow();
   const mode = process.env.DROVR_MODE;
   const pane = process.env.DROVR_PANE;
   if (!mode || !pane) {
