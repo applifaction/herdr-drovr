@@ -1,1 +1,4 @@
 node_modules/
+.local-validation/
+.pi-subagents/
+__pycache__/

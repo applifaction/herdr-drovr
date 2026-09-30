@@ -237,15 +237,6 @@ function move(args: string[]): MovedPane {
   return r.pane;
 }
 
-// Focus is a nicety on top of an already-completed move; if the server
-// declines while the popup is up, the move still stands, so don't fail.
-function focusDestination(pane: MovedPane): void {
-  try {
-    herdrJSON(["workspace", "focus", pane.workspace_id]);
-    herdrJSON(["tab", "focus", pane.tab_id]);
-  } catch {}
-}
-
 // A failed label lookup falls back silently: the move matters more than the name.
 function sourceTabLabel(srcTab: string): string {
   try {
@@ -372,6 +363,34 @@ function runFzf(args: string[], input: string): FzfPick {
   return { outcome: "picked", stdout: fzf.stdout || "" };
 }
 
+type WorkspaceNamePick =
+  | { outcome: "picked"; name: string }
+  | { outcome: "cancelled" | "failed" };
+
+// Naming is a separate, cancellable step. The destination search is only an
+// editable suggestion, never permission to reuse the source tab's label.
+function promptWorkspaceName(initialQuery: string): WorkspaceNamePick {
+  let query = initialQuery.trim();
+  let header = "Choose a workspace name. Enter to create · esc to cancel";
+  while (true) {
+    const pick = runFzf(
+      [
+        ...FZF_STYLE,
+        "--prompt", "workspace name › ",
+        "--header", header,
+        "--query", query,
+        "--print-query",
+        "--disabled",
+      ],
+      "Create workspace\n"
+    );
+    if (pick.outcome !== "picked") return { outcome: pick.outcome };
+    query = (pick.stdout.split("\n")[0] ?? "").trim();
+    if (query) return { outcome: "picked", name: query };
+    header = "Workspace name cannot be empty. Enter a name · esc to cancel";
+  }
+}
+
 function moveTabFlow(srcPane: string): number {
   const snapshot = herdrJSON<PaneLayoutResult>(["pane", "layout", "--pane", srcPane]).result.layout;
   const root = rootFromFlatSnapshot(snapshot);
@@ -420,6 +439,13 @@ function moveTabFlow(srcPane: string): number {
     return 1;
   }
 
+  let workspaceName = "";
+  if (token === NEW_WS_TOKEN) {
+    const name = promptWorkspaceName(queryRaw);
+    if (name.outcome !== "picked") return name.outcome === "failed" ? 1 : 0;
+    workspaceName = name.name;
+  }
+
   // The popup is session-modal, so the user can't touch the layout while it
   // is open, but sibling agents driving the CLI still can; re-validate.
   const live = livePaneTabs();
@@ -429,18 +455,19 @@ function moveTabFlow(srcPane: string): number {
   }
 
   const rootAnchor = anchorOf(root);
-  // A typed query names the new workspace; the tab keeps its own label.
+  // Herdr closes the popup (and this process) when its owner tab disappears.
+  // Focus must be part of the LAST move, not a command after it. Earlier
+  // moves stay unfocused so the popup remains visible if placement fails.
+  let remainingMoves = leavesOf(root).length;
+  const focusFlag = (): string => --remainingMoves === 0 ? "--focus" : "--no-focus";
+  // The confirmed name belongs to the workspace; the tab keeps its own label.
   const first = move(
     token === NEW_WS_TOKEN
-      ? ["pane", "move", rootAnchor, "--new-workspace", "--label", queryRaw.trim() || tabLabel, "--tab-label", tabLabel, "--no-focus"]
-      : ["pane", "move", rootAnchor, "--new-tab", "--workspace", token, "--label", tabLabel, "--no-focus"]
+      ? ["pane", "move", rootAnchor, "--new-workspace", "--label", workspaceName, "--tab-label", tabLabel, focusFlag()]
+      : ["pane", "move", rootAnchor, "--new-tab", "--workspace", token, "--label", tabLabel, focusFlag()]
   );
   const newTab = first.tab_id;
   const idMap: Record<string, string> = { [rootAnchor]: first.pane_id };
-
-  // Focus the destination now: it appears the instant the popup closes, and
-  // pane moves stay --no-focus so focus jumps exactly once.
-  focusDestination(first);
 
   // For each split, carve the SECOND region out of the pane currently filling
   // the node's region (the anchor of FIRST), then recurse. Herdr's --ratio is
@@ -459,7 +486,7 @@ function moveTabFlow(srcPane: string): number {
       "--split", node.direction,
       "--target-pane", target,
       "--ratio", String(node.ratio),
-      "--no-focus",
+      focusFlag(),
     ]);
     idMap[secondOld] = moved.pane_id;
     place(node.first);
@@ -536,23 +563,28 @@ function movePaneFlow(srcPane: string): number {
     return 1;
   }
 
+  let name = queryRaw.trim();
+  if (choice.dest.kind === "new-workspace") {
+    const pickedName = promptWorkspaceName(queryRaw);
+    if (pickedName.outcome !== "picked") return pickedName.outcome === "failed" ? 1 : 0;
+    name = pickedName.name;
+  }
+
   if (livePaneTabs().get(src.pane_id) !== src.tab_id) {
     keepPickerOpenUntilEnter("drovr: the source pane changed while the picker was open; nothing was moved.");
     return 1;
   }
 
-  // Omitting --target-pane splits the destination tab's focused pane, which
-  // is the intuitive landing spot. A typed query names a new tab/workspace.
-  const name = queryRaw.trim();
+  // Omitting --target-pane splits the destination tab's focused pane.
+  // Include focus in the move: moving the last pane can terminate this popup.
   const label = name ? ["--label", name] : [];
-  const moved = move(
+  move(
     choice.dest.kind === "tab"
-      ? ["pane", "move", src.pane_id, "--tab", choice.dest.tabId, "--split", choice.direction, "--no-focus"]
+      ? ["pane", "move", src.pane_id, "--tab", choice.dest.tabId, "--split", choice.direction, "--focus"]
       : choice.dest.kind === "new-tab"
-        ? ["pane", "move", src.pane_id, "--new-tab", "--workspace", src.workspace_id, ...label, "--no-focus"]
-        : ["pane", "move", src.pane_id, "--new-workspace", ...label, "--no-focus"]
+        ? ["pane", "move", src.pane_id, "--new-tab", "--workspace", src.workspace_id, ...label, "--focus"]
+        : ["pane", "move", src.pane_id, "--new-workspace", ...label, "--focus"]
   );
-  focusDestination(moved);
   return 0;
 }
 
