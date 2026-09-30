@@ -84,7 +84,7 @@ Three scripts, no npm runtime dependencies:
 - **`pick-and-move.ts`** runs inside the popup, where fzf has a real TTY. It handles destination selection, the input-only name form, source revalidation and the moves.
 - **`open-workspace-name.ts`** is a short-lived detached opener. Herdr cannot resize an existing popup and allows only one at a time, so the destination picker exits and the opener launches the smaller name modal. It carries the original source snapshot forward, retries only while the old popup is still open (at most five seconds), and reports other launch errors as notifications. It never closes another popup or retries a move.
 
-The name modal is plugin-rendered, not Herdr's internal dialog API. It inherits the terminal palette and matches the native dialog's dimensions and main controls.
+The name modal is plugin-rendered, not Herdr's internal dialog API. It matches the native dialog's dimensions and main controls. Text and background inherit the terminal's default color pair; buttons use inverse video. This keeps input, labels and validation messages readable in both light and dark terminals instead of assuming ANSI bright white is a theme text color.
 
 A tab move reconstructs the layout tree from the rects Herdr actually reported (no ratio arithmetic), re-validates the source after the picker and any name prompt, then replays the tree in the destination: one `pane move --new-tab`/`--new-workspace` for the anchor, then one `pane move --split` per split node with the exact direction and ratio. Earlier moves use `--no-focus`; the final move uses `--focus`. A pane move uses `--focus` in its single move request as well.
 
@@ -120,7 +120,12 @@ python3 -m venv .local-validation/venv
 .local-validation/venv/bin/python tests/tui_smoke.py --destination new --mouse-name --cancel-name --output .local-validation/tui-mouse-cancel.json
 ```
 
-Name-modal tests compare the popup dimensions to Herdr's actual tab-name dialog and exercise keyboard/mouse controls, cancellation, validation and destination focus.
+Name-modal tests compare the popup dimensions to Herdr's actual tab-name dialog and exercise keyboard/mouse controls, cancellation, validation and destination focus. They also measure rendered text contrast for the suggestion, newly typed name, title, controls and validation message (minimum 4.5:1). Default terminal colors are resolved against explicit outer-terminal fixtures, independently of Herdr's chrome theme:
+
+```bash
+.local-validation/venv/bin/python tests/tui_smoke.py --destination new --blank-name --theme solarized-light --host-foreground 171421 --host-background ffffff --output .local-validation/tui-light.json
+.local-validation/venv/bin/python tests/tui_smoke.py --destination new --blank-name --theme solarized-dark --host-foreground cdd6f4 --host-background 1e1e2e --output .local-validation/tui-dark.json
+```
 
 ## License
 

@@ -26,11 +26,14 @@ parser.add_argument('--cancel-name', action='store_true')
 parser.add_argument('--blank-name', action='store_true')
 parser.add_argument('--mouse-name', action='store_true')
 parser.add_argument('--close-workspace', action='store_true')
+parser.add_argument('--theme', help='Herdr theme used by the isolated server and client')
+parser.add_argument('--host-foreground', default='cdd6f4', help='Emulated outer terminal default text RGB')
+parser.add_argument('--host-background', default='1e1e2e', help='Emulated outer terminal default background RGB')
 args = parser.parse_args()
 assert not (args.cancel_name or args.blank_name) or args.destination == 'new'
 herdr = shutil.which('herdr')
 assert herdr
-results = {}
+results = {'host_colors': {'fg': args.host_foreground, 'bg': args.host_background}}
 with tempfile.TemporaryDirectory(prefix='drovr-tui-') as temp:
     root = Path(temp)
     env = {k: v for k, v in os.environ.items() if not k.startswith('HERDR_')}
@@ -54,6 +57,9 @@ key = "prefix+m"
 type = "plugin_action"
 command = "drovr.move-pane"
 ''')
+    if args.theme:
+        with (root/'config.toml').open('a') as config:
+            config.write(f'\n[theme]\nname = {json.dumps(args.theme)}\nauto_switch = false\n')
 
     def rpc(method, params=None):
         with socket.socket(socket.AF_UNIX) as sock:
@@ -123,6 +129,26 @@ command = "drovr.move-pane"
         bottom = next(i for i in range(top+1, len(lines)) if lines[i][left] == '└' and lines[i][right] == '┘')
         return {'width': right-left+1, 'height': bottom-top+1}
 
+    def text_colors(text):
+        row = next(i for i, line in enumerate(screen.display) if text in line)
+        col = screen.display[row].index(text)
+        cell = screen.buffer[row][col]
+        return {'fg': cell.fg, 'bg': cell.bg, 'reverse': cell.reverse, 'bold': cell.bold}
+
+    def contrast(colors):
+        # Measure the rendered text, not just whether it exists in a snapshot.
+        def luminance(rgb):
+            assert len(rgb) == 6, f'Expected rendered RGB, got {rgb!r}'
+            srgb = [int(rgb[i:i+2], 16)/255 for i in (0, 2, 4)]
+            linear = [v/12.92 if v <= .04045 else ((v+.055)/1.055)**2.4 for v in srgb]
+            return sum(c*w for c, w in zip(linear, (.2126, .7152, .0722)))
+        # pyte leaves SGR default colors unresolved. Resolve against the
+        # explicit outer terminal fixture, independently of Herdr's UI theme.
+        fg = args.host_foreground if colors['fg'] == 'default' else colors['fg']
+        bg = args.host_background if colors['bg'] == 'default' else colors['bg']
+        low, high = sorted([luminance(fg), luminance(bg)])
+        return (high+.05)/(low+.05)
+
     def stop_owned(process):
         if process is None:
             return
@@ -170,6 +196,12 @@ command = "drovr.move-pane"
                 keys(b'\x02T')  # native tab-name modal, for visual comparison
                 wait_for(lambda: 'rename tab' in '\n'.join(screen.display), 'native name modal did not open')
                 results['native_name_prompt'] = screen.display
+                native_title_row = next(i for i, line in enumerate(screen.display) if 'rename tab' in line)
+                native_input_row = native_title_row + 2
+                native_input_col = screen.display[native_input_row].index('MOVED-TAB')
+                native_input_cell = screen.buffer[native_input_row][native_input_col]
+                results['native_input_colors'] = {'fg': native_input_cell.fg, 'bg': native_input_cell.bg}
+                results['native_title_colors'] = text_colors('rename tab')
                 keys(b'\x1b')
             keys(b'\x02M' if args.mode == 'tab' else b'\x02m')
             wait_for(lambda: f'move {args.mode} to' in '\n'.join(screen.display), 'picker did not open')
@@ -186,6 +218,12 @@ command = "drovr.move-pane"
                 wait_for(lambda: 'new workspace' in '\n'.join(screen.display) and '^c clear' in '\n'.join(screen.display),
                          'compact name modal did not open')
                 results['name_prompt'] = screen.display
+                results['input_colors'] = text_colors('Unmatched query')
+                results['input_contrast'] = contrast(results['input_colors'])
+                assert results['input_contrast'] >= 4.5, f"Unreadable name input: {results['input_colors']} (contrast {results['input_contrast']:.2f}:1)"
+                results['modal_text_colors'] = {text: text_colors(text) for text in ['new workspace', 'save', 'clear', 'cancel']}
+                for text, colors in results['modal_text_colors'].items():
+                    assert contrast(colors) >= 4.5, f'Unreadable modal text {text!r}: {colors}'
                 results['modal_geometry'] = modal_geometry(screen.display)
                 assert results['modal_geometry'] == modal_geometry(results['native_name_prompt']) == {'width': 56, 'height': 7}
                 assert 'Create workspace' not in '\n'.join(screen.display)
@@ -197,6 +235,8 @@ command = "drovr.move-pane"
                         keys(b'\x03')  # ctrl-c clears, it must not cancel the modal
                     keys(b'\r')
                     wait_for(lambda: 'cannot be empty' in '\n'.join(screen.display), 'empty name was not rejected')
+                    results['validation_colors'] = text_colors('cannot be empty')
+                    assert contrast(results['validation_colors']) >= 4.5
                     assert len(rpc('workspace.list')['workspaces']) == 2
                 if args.cancel_name:
                     if args.mouse_name:
@@ -210,6 +250,8 @@ command = "drovr.move-pane"
                     results['cancelled_without_changes'] = True
                 else:
                     keys('\x15My new workspace ä'.encode())
+                    results['edited_input_colors'] = text_colors('My new workspace ä')
+                    assert contrast(results['edited_input_colors']) >= 4.5
                     if args.mouse_name:
                         click_name_action('save')
                     else:

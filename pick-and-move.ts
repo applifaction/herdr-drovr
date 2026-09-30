@@ -371,6 +371,8 @@ type WorkspaceNamePick =
 // Match Herdr's native 56×7 name modal: title, one input, action hints.
 // fzf supplies terminal editing and paste handling, but no filter list or
 // result counter. print-query accepts input even without a selected row.
+// Use the terminal's default foreground/background as a pair. ANSI 15 is
+// bright white even in a light terminal; palette slots aren't UI theme roles.
 function promptWorkspaceName(initialQuery: string): WorkspaceNamePick {
   let query = initialQuery.trim();
   let error = "";
@@ -388,15 +390,15 @@ function promptWorkspaceName(initialQuery: string): WorkspaceNamePick {
         "--bind", "enter:print-query,ctrl-c:clear-query,esc:abort",
         "--bind", 'click-footer:transform[case "$FZF_CLICK_FOOTER_WORD" in save|↵) echo print-query;; clear|^c) echo clear-query;; cancel|esc) echo abort;; esac]',
         "--footer-border", "none",
-        "--footer", "        \x1b[1;30;44m ↵ save \x1b[0m  \x1b[1;37;40m ^c clear \x1b[0m  \x1b[1;37;40m esc cancel \x1b[0m",
-        "--color", "16,bg:-1,fg:7,input-bg:0,input-fg:15,prompt:15,header:15,footer:7",
+        "--footer", "        \x1b[1;7m ↵ save \x1b[0m  \x1b[7m ^c clear \x1b[0m  \x1b[7m esc cancel \x1b[0m",
+        "--color", "16,bg:-1,fg:-1,input-bg:-1,input-fg:-1,prompt:-1,header:-1,footer:-1",
       ],
       ""
     );
     if (pick.outcome !== "picked") return { outcome: pick.outcome };
     query = (pick.stdout.split("\n")[0] ?? "").trim();
     if (query) return { outcome: "picked", name: query };
-    error = "\x1b[31mWorkspace name cannot be empty\x1b[0m";
+    error = "\x1b[1mWorkspace name cannot be empty\x1b[0m";
   }
 }
 

@@ -200,6 +200,18 @@ test("workspace name uses a compact input-only modal matching Herdr's native geo
   assert.match(manifest, /id = "workspace-name"[\s\S]*?placement = "popup"\nwidth = 56\nheight = 7/);
 });
 
+test("name form inherits a matched foreground/background pair in light and dark terminals", () => {
+  const result = runFlow("tab", [tabNew(), name("Project")]);
+  assert.equal(result.status, 0, result.stderr);
+  const form = result.pickers[1]!;
+  const colors = valueOf(form, "--color")!.split(",");
+  for (const role of ["fg", "bg", "input-fg", "input-bg", "prompt", "header", "footer"]) {
+    assert.ok(colors.includes(`${role}:-1`), `${role} must inherit, not assume ANSI white/black matches the theme`);
+  }
+  const attributes = [...valueOf(form, "--footer")!.matchAll(/\x1b\[([\d;]+)m/g)].map(m => m[1]);
+  assert.ok(attributes.every(a => ["0", "1;7", "7"].includes(a!)), "buttons may use bold/inverse, not fixed palette colors");
+});
+
 test("dialog opener waits for the picker to close without retrying moves", () => {
   const result = runFlow("tab", [tabNew(), name("Project")], { popupBusy: 2 });
   assert.equal(result.status, 0, result.stderr);
